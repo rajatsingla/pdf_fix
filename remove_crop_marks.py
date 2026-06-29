@@ -76,32 +76,37 @@ def is_valid_clip(clip: fitz.Rect, page_rect: fitz.Rect) -> bool:
     return True
 
 
-def existing_trimbox_clip(page: fitz.Page) -> fitz.Rect | None:
+def existing_box_clip(page: fitz.Page, box: fitz.Rect | None) -> fitz.Rect | None:
     """
-    Use PDF TrimBox when available.
+    Use a PDF page box (TrimBox or BleedBox) when available.
 
     Many print-ready PDFs already contain:
-    - MediaBox: full page including marks
-    - TrimBox: final cut size
+    - MediaBox:  full page including marks
+    - BleedBox:  final cut size plus bleed (print-ready)
+    - TrimBox:   final cut size
 
-    If TrimBox is smaller than the visible page, cropping to it removes crop marks.
+    If the box is smaller than the visible page, cropping to it removes crop marks.
     """
     page_rect = page.rect
-    trim = page.trimbox
 
-    if not trim or trim.is_empty:
+    if not box or box.is_empty:
         return None
 
     # Keep clip inside current page rectangle.
-    trim = trim & page_rect
+    box = box & page_rect
 
-    if not is_valid_clip(trim, page_rect):
+    if not is_valid_clip(box, page_rect):
         return None
 
-    if not rects_different(trim, page_rect):
+    if not rects_different(box, page_rect):
         return None
 
-    return trim
+    return box
+
+
+def existing_trimbox_clip(page: fitz.Page) -> fitz.Rect | None:
+    """Backwards-compatible wrapper: crop to the PDF TrimBox when available."""
+    return existing_box_clip(page, page.trimbox)
 
 
 def strongest_group(profile: np.ndarray, start: int, end: int, min_score: float):

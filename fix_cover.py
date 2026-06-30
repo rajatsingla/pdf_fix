@@ -11,7 +11,7 @@
 
 import fitz  # PyMuPDF
 
-from remove_crop_marks import existing_box_clip, detect_crop_mark_clip
+from remove_crop_marks import existing_box_clip, detect_crop_mark_clip, is_valid_clip
 from trim_white_space import detect_nonwhite_bbox, expand_rect, has_real_crop, PADDING_PT
 from trim_flaps import detect_flap_clip
 from resize import resize_doc
@@ -70,7 +70,10 @@ def _trim_clip(page: fitz.Page) -> fitz.Rect:
     detected = detect_nonwhite_bbox(page)
     if detected is not None:
         detected = expand_rect(detected, PADDING_PT, page_rect)
-        if has_real_crop(page_rect, detected):
+        # Require both a real crop and a sane size. Without the size guard a
+        # single stray dark pixel (or the any-non-white fallback inside
+        # detect_nonwhite_bbox) could crop the cover down to a speck.
+        if has_real_crop(page_rect, detected) and is_valid_clip(detected, page_rect):
             return detected
 
     return page_rect

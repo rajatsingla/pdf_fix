@@ -76,11 +76,9 @@ def detect_nonwhite_bbox(page: fitz.Page) -> fitz.Rect | None:
     rows = np.where(row_counts >= min_row_pixels)[0]
     cols = np.where(col_counts >= min_col_pixels)[0]
 
-    # Fallback: if the coverage method finds nothing, use any non-white pixel.
-    if len(rows) == 0 or len(cols) == 0:
-        rows = np.where(row_counts > 0)[0]
-        cols = np.where(col_counts > 0)[0]
-
+    # If the coverage method finds no qualifying row/column, the page is
+    # effectively blank or uniformly near-white. Report "no content" rather than
+    # chasing a single stray pixel, which would crop the cover down to a speck.
     if len(rows) == 0 or len(cols) == 0:
         return None
 

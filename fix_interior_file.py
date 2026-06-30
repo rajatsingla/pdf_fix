@@ -23,6 +23,10 @@ POINTS_PER_INCH = 72
 # A file may carry up to this much added trim/bleed over the true trim size.
 TRIM_TOLERANCE_IN = 0.25
 
+# Allow the file to be this much *smaller* than a trim size and still match it,
+# to absorb measurement/rounding error (e.g. a 5.9999 in page that is really 6 in).
+SIZE_MATCH_ERROR_IN = 0.01
+
 # Supported book trim sizes (international superset of domesticBookSizes),
 # mirrored from tango/src/utils/book/index.ts. Includes both portrait and
 # landscape variants, so (width, height) is compared directly.
@@ -48,17 +52,21 @@ SUPPORTED_SIZES = [
 def _crop_marks_clip(page: fitz.Page) -> fitz.Rect:
     """
     Decide the crop-mark clip for an interior page:
-      1. BleedBox if present
-      2. else TrimBox if present
+      1. TrimBox if present (the true cut size -> book size matches exactly)
+      2. else BleedBox if present
       3. else visual crop-mark detection
     Falls back to the full page rect when no crop marks are found.
     No whitespace trim and no flap handling for interiors.
+
+    TrimBox is preferred over BleedBox so interiors are cut to the trim line:
+    the kept page size is the real book size (e.g. 6x9), which then matches a
+    supported trim size exactly instead of a larger size due to retained bleed.
     """
-    clip = existing_box_clip(page, page.bleedbox)
+    clip = existing_box_clip(page, page.trimbox)
     if clip is not None:
         return clip
 
-    clip = existing_box_clip(page, page.trimbox)
+    clip = existing_box_clip(page, page.bleedbox)
     if clip is not None:
         return clip
 
@@ -77,18 +85,24 @@ def _match_size(width_in: float, height_in: float) -> tuple[str, dict]:
     """
     Match (width_in, height_in) against the supported sizes.
 
-    A size matches when the file is no smaller than the trim size and at most
-    TRIM_TOLERANCE_IN larger on each dimension:
-        size.w <= width  <= size.w + 0.25  AND  size.h <= height <= size.h + 0.25
+    Every file is modelled as a base trim size plus 0..TRIM_TOLERANCE_IN of
+    added bleed, with a small SIZE_MATCH_ERROR_IN slack below for measurement
+    error. A size matches when:
+        size.w - 0.01 <= width  <= size.w + 0.25
+        size.h - 0.01 <= height <= size.h + 0.25
 
-    Returns ("match", size) when at least one size matches (ambiguous ->
-    smallest area). Otherwise ("resize", closest_size) by Euclidean distance,
-    ties broken towards the smaller size.
+    Returns ("match", size) when at least one size matches; on overlap the
+    SMALLEST base size wins, since the file is read as that base plus bleed
+    (e.g. 6.25x9.25 is US Trade 6x9 + full bleed, not Royal). Otherwise
+    ("resize", closest_size) by Euclidean distance, ties towards smaller area.
     """
+    lo = TRIM_TOLERANCE_IN  # upper slack (added bleed)
+    err = SIZE_MATCH_ERROR_IN  # lower slack (measurement error)
+
     matches = [
         s for s in SUPPORTED_SIZES
-        if s["width_in"] <= width_in <= s["width_in"] + TRIM_TOLERANCE_IN
-        and s["height_in"] <= height_in <= s["height_in"] + TRIM_TOLERANCE_IN
+        if s["width_in"] - err <= width_in <= s["width_in"] + lo
+        and s["height_in"] - err <= height_in <= s["height_in"] + lo
     ]
 
     if matches:
@@ -133,9 +147,18 @@ def fix_interior_file(pdf_bytes: bytes, output_path: str | None = None) -> bytes
     kind, size = _match_size(width_in, height_in)
 
     if kind == "match":
-        # Already a supported size (within trim tolerance): keep its own dims,
-        # run resize only to normalise (e.g. fix stray rotated pages).
-        target_w_in, target_h_in = width_in, height_in
+        within_error = (
+            abs(width_in - size["width_in"]) <= SIZE_MATCH_ERROR_IN
+            and abs(height_in - size["height_in"]) <= SIZE_MATCH_ERROR_IN
+        )
+        if within_error:
+            # Essentially the trim size already (only measurement noise): snap to
+            # the exact standard dims so the output is perfectly sized.
+            target_w_in, target_h_in = size["width_in"], size["height_in"]
+        else:
+            # Carries real added bleed: keep its own dims so the content is not
+            # scaled/distorted; resize only normalises (e.g. stray rotated pages).
+            target_w_in, target_h_in = width_in, height_in
     else:
         target_w_in, target_h_in = size["width_in"], size["height_in"]
 

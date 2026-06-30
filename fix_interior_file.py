@@ -117,10 +117,14 @@ def fix_interior_file(pdf_bytes: bytes, output_path: str | None = None) -> bytes
     src = fitz.open(stream=pdf_bytes, filetype="pdf")
 
     # Stage A: remove crop marks (BleedBox / TrimBox / visual marks).
+    # Interiors are geometrically uniform, so detect the clip once on the first
+    # page and reuse it for every page. This avoids a full-page render per page,
+    # which is the dominant cost for large multi-page files.
     stage_a = fitz.open()
     stage_a.set_metadata(src.metadata)
-    for page_index, page in enumerate(src):
-        _apply_clip(src, page_index, stage_a, _crop_marks_clip(page))
+    clip = _crop_marks_clip(src[0])
+    for page_index in range(src.page_count):
+        _apply_clip(src, page_index, stage_a, clip)
     src.close()
 
     # Match the (uniform) page size against the supported trim sizes.

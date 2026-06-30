@@ -34,6 +34,13 @@ EDGE_SEARCH_PT = 72  # 1 inch
 # Minimum dark-pixel length required for a crop mark candidate.
 MIN_MARK_LENGTH_PT = 7
 
+# Maximum allowed thickness of a crop-mark peak.
+# A real crop mark is a thin line, so its dark-pixel group projects to a narrow
+# peak (a few points wide). A solid dark fill (e.g. a full-bleed dark cover)
+# saturates the whole edge band, producing a group as wide as the search band.
+# Rejecting wide groups prevents misreading full-bleed artwork as crop marks.
+MAX_MARK_WIDTH_PT = 6.0
+
 # Do not crop unless we remove at least this much from an edge.
 MIN_CROP_PT = 1.0
 
@@ -109,12 +116,20 @@ def existing_trimbox_clip(page: fitz.Page) -> fitz.Rect | None:
     return existing_box_clip(page, page.trimbox)
 
 
-def strongest_group(profile: np.ndarray, start: int, end: int, min_score: float):
+def strongest_group(profile: np.ndarray, start: int, end: int, min_score: float,
+                    max_width: float | None = None):
     """
     Find strongest peak group in profile[start:end].
 
+    A crop mark is a thin line, so its peak group should be narrow. When
+    ``max_width`` is given (in profile pixels) and the group is wider than that,
+    the peak is treated as a solid dark region (not a crop mark) and ``None`` is
+    returned. This guards against full-bleed dark artwork saturating the edge
+    band, whose centroid would otherwise land at the band midpoint and fake a
+    crop mark.
+
     Returns:
-        center_index, peak_score
+        center_index, peak_score  (or None when no thin mark is found)
     """
     start = max(0, start)
     end = min(len(profile), end)
@@ -139,6 +154,10 @@ def strongest_group(profile: np.ndarray, start: int, end: int, min_score: float)
     right = peak_local
     while right + 1 < len(segment) and segment[right + 1] >= threshold:
         right += 1
+
+    # A real crop mark is a thin line; a wide group is a solid dark fill.
+    if max_width is not None and (right - left + 1) > max_width:
+        return None
 
     indexes = np.arange(left, right + 1)
     weights = segment[left:right + 1].astype(np.float64)
@@ -190,6 +209,7 @@ def detect_crop_mark_clip(page: fitz.Page) -> tuple[fitz.Rect, dict]:
     edge_px = max(20, min(edge_px, int(min(w, h) * 0.25)))
 
     min_score = max(3, MIN_MARK_LENGTH_PT * zoom)
+    max_width = MAX_MARK_WIDTH_PT * zoom
 
     # Vertical crop-mark candidates:
     # count dark pixels in top and bottom edge bands for every x column.
@@ -205,11 +225,11 @@ def detect_crop_mark_clip(page: fitz.Page) -> tuple[fitz.Rect, dict]:
         dark_neutral[:, w - edge_px:].sum(axis=1)
     )
 
-    left = strongest_group(vertical_profile, 0, edge_px, min_score)
-    right = strongest_group(vertical_profile, w - edge_px, w, min_score)
+    left = strongest_group(vertical_profile, 0, edge_px, min_score, max_width)
+    right = strongest_group(vertical_profile, w - edge_px, w, min_score, max_width)
 
-    top = strongest_group(horizontal_profile, 0, edge_px, min_score)
-    bottom = strongest_group(horizontal_profile, h - edge_px, h, min_score)
+    top = strongest_group(horizontal_profile, 0, edge_px, min_score, max_width)
+    bottom = strongest_group(horizontal_profile, h - edge_px, h, min_score, max_width)
 
     info = {
         "method": "crop-mark-detection",

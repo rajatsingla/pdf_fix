@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF Fix</title>
+  <style>
+    :root { --bg:#0f1115; --card:#1a1e26; --fg:#e7e9ee; --muted:#9aa3b2;
+            --accent:#4f8cff; --ok:#36c08a; --err:#ff6b6b; --border:#2a2f3a; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+           background:var(--bg); color:var(--fg);
+           display:flex; min-height:100vh; align-items:center; justify-content:center; }
+    .card { width:min(480px,92vw); background:var(--card); border:1px solid var(--border);
+            border-radius:14px; padding:28px; }
+    h1 { font-size:20px; margin:0 0 4px; }
+    p.sub { margin:0 0 22px; color:var(--muted); }
+    .modes { display:flex; gap:10px; margin-bottom:18px; }
+    .mode { flex:1; padding:12px; text-align:center; cursor:pointer; user-select:none;
+            border:1px solid var(--border); border-radius:10px; background:#141821;
+            color:var(--fg); font-weight:600; transition:.15s; }
+    .mode:hover { border-color:var(--accent); }
+    .mode.active { border-color:var(--accent); background:rgba(79,140,255,.14);
+                   color:#cfe0ff; }
+    .dims { display:none; gap:10px; margin-bottom:16px; }
+    .dims.show { display:flex; }
+    .dims label { flex:1; font-size:13px; color:var(--muted); }
+    .dims input { width:100%; margin-top:4px; padding:9px 10px; border-radius:8px;
+                  background:#0e1117; border:1px solid var(--border); color:var(--fg); }
+    .drop { border:1.5px dashed var(--border); border-radius:10px; padding:22px;
+            text-align:center; color:var(--muted); cursor:pointer; margin-bottom:16px; }
+    .drop.has { border-color:var(--ok); color:var(--fg); }
+    button.go { width:100%; padding:12px; border:0; border-radius:10px; cursor:pointer;
+                background:var(--accent); color:#fff; font-weight:700; font-size:15px; }
+    button.go:disabled { opacity:.5; cursor:not-allowed; }
+    .bar { height:8px; background:#0e1117; border-radius:6px; overflow:hidden;
+           margin-top:16px; display:none; }
+    .bar.show { display:block; }
+    .bar > i { display:block; height:100%; width:0; background:var(--accent);
+               transition:width .2s; }
+    .bar.indet > i { width:35% !important; animation:slide 1s infinite ease-in-out; }
+    @keyframes slide { 0%{margin-left:-35%} 100%{margin-left:100%} }
+    .status { margin-top:12px; font-size:13px; color:var(--muted); min-height:18px; }
+    .status.err { color:var(--err); }
+    .status.ok { color:var(--ok); }
+    a.dl { display:none; margin-top:16px; text-align:center; padding:12px;
+           border-radius:10px; background:var(--ok); color:#06241a; font-weight:700;
+           text-decoration:none; }
+    a.dl.show { display:block; }
+    input[type=file] { display:none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Fix Book PDF</h1>
+    <p class="sub">Pick a mode, upload a PDF, download the fixed file.</p>
+
+    <div class="modes">
+      <div class="mode" data-mode="cover">Fix Cover</div>
+      <div class="mode" data-mode="interior">Fix Interior</div>
+    </div>
+
+    <div class="dims" id="dims">
+      <label>Width (in)
+        <input id="width" type="number" step="0.01" min="0.1" value="5.5" />
+      </label>
+      <label>Height (in)
+        <input id="height" type="number" step="0.01" min="0.1" value="8.5" />
+      </label>
+    </div>
+
+    <label class="drop" id="drop">
+      <span id="dropText">Click to choose a PDF</span>
+      <input id="file" type="file" accept="application/pdf,.pdf" />
+    </label>
+
+    <button class="go" id="go" disabled>Process</button>
+
+    <div class="bar" id="bar"><i id="barFill"></i></div>
+    <div class="status" id="status"></div>
+    <a class="dl" id="dl">Download fixed PDF</a>
+  </div>
+
+  <script>
+    const el = (id) => document.getElementById(id);
+    const dims = el('dims'), dropText = el('dropText'), drop = el('drop');
+    const fileInput = el('file'), go = el('go'), bar = el('bar'), barFill = el('barFill');
+    const status = el('status'), dl = el('dl');
+
+    let mode = null;
+    let file = null;
+    let lastUrl = null;
+
+    function refresh() {
+      go.disabled = !(mode && file);
+    }
+
+    document.querySelectorAll('.mode').forEach((m) => {
+      m.addEventListener('click', () => {
+        document.querySelectorAll('.mode').forEach((x) => x.classList.remove('active'));
+        m.classList.add('active');
+        mode = m.dataset.mode;
+        dims.classList.toggle('show', mode === 'cover');
+        refresh();
+      });
+    });
+
+    fileInput.addEventListener('change', () => {
+      file = fileInput.files[0] || null;
+      drop.classList.toggle('has', !!file);
+      dropText.textContent = file ? file.name : 'Click to choose a PDF';
+      refresh();
+    });
+
+    function setStatus(msg, kind) {
+      status.textContent = msg;
+      status.className = 'status' + (kind ? ' ' + kind : '');
+    }
+
+    function resetOutput() {
+      dl.classList.remove('show');
+      if (lastUrl) { URL.revokeObjectURL(lastUrl); lastUrl = null; }
+    }
+
+    go.addEventListener('click', () => {
+      if (!mode || !file) return;
+      resetOutput();
+
+      let url = `/api/fix?type=${mode}`;
+      if (mode === 'cover') {
+        const w = el('width').value, h = el('height').value;
+        if (!(parseFloat(w) > 0) || !(parseFloat(h) > 0)) {
+          setStatus('Enter valid width and height.', 'err');
+          return;
+        }
+        url += `&width_in=${encodeURIComponent(w)}&height_in=${encodeURIComponent(h)}`;
+      }
+
+      go.disabled = true;
+      bar.classList.add('show');
+      bar.classList.remove('indet');
+      barFill.style.width = '0';
+      setStatus('Uploading…');
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url);
+      xhr.setRequestHeader('Content-Type', 'application/pdf');
+      xhr.responseType = 'blob';
+
+      // Approximate progress: real % for upload, indeterminate while processing.
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          barFill.style.width = Math.round((e.loaded / e.total) * 100) + '%';
+        }
+      };
+      xhr.upload.onload = () => {
+        bar.classList.add('indet');
+        setStatus('Processing…');
+      };
+
+      xhr.onload = () => {
+        bar.classList.remove('indet');
+        go.disabled = false;
+        if (xhr.status === 200) {
+          barFill.style.width = '100%';
+          lastUrl = URL.createObjectURL(xhr.response);
+          dl.href = lastUrl;
+          const base = file.name.replace(/\.pdf$/i, '');
+          dl.download = `${base}-fixed.pdf`;
+          dl.classList.add('show');
+          setStatus('Done.', 'ok');
+        } else {
+          bar.classList.remove('show');
+          // Error body is JSON ({error}) even though responseType is blob.
+          xhr.response.text().then((t) => {
+            let msg = t;
+            try { msg = JSON.parse(t).error || t; } catch (_) {}
+            setStatus('Error: ' + msg, 'err');
+          });
+        }
+      };
+
+      xhr.onerror = () => {
+        bar.classList.remove('show', 'indet');
+        go.disabled = false;
+        setStatus('Network error — is the server running?', 'err');
+      };
+
+      xhr.send(file);
+    });
+  </script>
+</body>
+</html>

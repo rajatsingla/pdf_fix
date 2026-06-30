@@ -109,6 +109,23 @@
       .cover-opts .dims {
         margin-bottom: 0;
       }
+      .field {
+        display: none;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .field.show {
+        display: block;
+      }
+      .field select {
+        width: 100%;
+        margin-top: 4px;
+        padding: 9px 10px;
+        border-radius: 8px;
+        background: #0e1117;
+        border: 1px solid var(--border);
+        color: var(--fg);
+      }
       .submodes {
         display: flex;
         gap: 8px;
@@ -289,6 +306,11 @@
           </label>
         </div>
 
+        <label class="field" id="sizeField">
+          Interior size
+          <select id="sizePreset"></select>
+        </label>
+
         <div class="dims" id="interiorDims">
           <label
             >Interior width (in)
@@ -329,11 +351,55 @@
       // (browsers block HTTPS pages calling http:// endpoints).
       const API_BASE = "https://pdf-fix.stck.dev";
 
+      // International book sizes (from tango src/utils/book/index.ts).
+      const INTERNATIONAL_SIZES = [
+        { name: "Pocket Book", width_in: 4.25, height_in: 6.87 },
+        { name: "Novella", width_in: 5, height_in: 8 },
+        { name: "Digest", width_in: 5.5, height_in: 8.5 },
+        { name: "A5", width_in: 5.83, height_in: 8.27 },
+        { name: "US Trade", width_in: 6, height_in: 9 },
+        { name: "Royal", width_in: 6.14, height_in: 9.21 },
+        { name: "Executive", width_in: 7, height_in: 10 },
+        { name: "Crown Quarto", width_in: 7.44, height_in: 9.68 },
+        { name: "Small Square", width_in: 7.5, height_in: 7.5 },
+        { name: "A4", width_in: 8.27, height_in: 11.69 },
+        { name: "Square", width_in: 8.5, height_in: 8.5 },
+        { name: "US Letter", width_in: 8.5, height_in: 11 },
+        { name: "Small Landscape", width_in: 9, height_in: 7 },
+        { name: "US Letter Landscape", width_in: 11, height_in: 8.5 },
+        { name: "A4 Landscape", width_in: 11.69, height_in: 8.27 },
+      ];
+
       const el = (id) => document.getElementById(id);
       const coverOpts = el("coverOpts"),
         directDims = el("directDims"),
         interiorDims = el("interiorDims"),
+        sizeField = el("sizeField"),
+        sizePreset = el("sizePreset"),
         calc = el("calc");
+
+      // Populate the size dropdown: every international size + a Custom option.
+      INTERNATIONAL_SIZES.forEach((s, i) => {
+        const o = document.createElement("option");
+        o.value = String(i);
+        o.textContent = `${s.name} (${s.width_in} × ${s.height_in} in)`;
+        sizePreset.appendChild(o);
+      });
+      const customOpt = document.createElement("option");
+      customOpt.value = "custom";
+      customOpt.textContent = "Custom…";
+      sizePreset.appendChild(customOpt);
+      // Default to Digest (5.5 × 8.5), matching the input defaults.
+      sizePreset.value = "2";
+
+      sizePreset.addEventListener("change", () => {
+        const s = INTERNATIONAL_SIZES[Number(sizePreset.value)];
+        if (s) {
+          el("trimW").value = s.width_in;
+          el("trimH").value = s.height_in;
+        }
+        updateCalc();
+      });
       const dropText = el("dropText"),
         drop = el("drop");
       const fileInput = el("file"),
@@ -415,13 +481,19 @@
           coverSub = s.dataset.sub;
           directDims.classList.toggle("show", coverSub === "direct");
           interiorDims.classList.toggle("show", coverSub === "interior");
+          sizeField.classList.toggle("show", coverSub === "interior");
           updateCalc();
         });
       });
 
-      ["trimW", "trimH", "pageCount"].forEach((id) =>
-        el(id).addEventListener("input", updateCalc),
+      // Editing the dimensions by hand means it's no longer a known preset.
+      ["trimW", "trimH"].forEach((id) =>
+        el(id).addEventListener("input", () => {
+          sizePreset.value = "custom";
+          updateCalc();
+        }),
       );
+      el("pageCount").addEventListener("input", updateCalc);
 
       fileInput.addEventListener("change", () => {
         file = fileInput.files[0] || null;

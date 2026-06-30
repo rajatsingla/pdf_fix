@@ -6,8 +6,11 @@
 # Run:
 #   uvicorn main:app --host 0.0.0.0 --port 8000
 
+import os
+
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 from fix_cover import fix_cover
@@ -16,11 +19,28 @@ from fix_interior_file import fix_interior_file
 app = FastAPI(title="PDF Fix Service")
 
 PDF_MEDIA_TYPE = "application/pdf"
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+# Allow the browser to call this API directly (no Node proxy). Override with
+# ALLOW_ORIGINS=https://foo.com,https://bar.com ; default "*" for any origin.
+_origins = os.environ.get("ALLOW_ORIGINS", "*").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in _origins if o.strip()],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/")
+def index() -> FileResponse:
+    # Serve the UI from the same origin as the API (no CORS/mixed-content issues).
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
 
 async def _read_pdf_body(request: Request) -> bytes:

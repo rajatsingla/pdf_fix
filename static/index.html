@@ -298,11 +298,11 @@
         <div class="dims show" id="directDims">
           <label
             >Width (in)
-            <input id="width" type="number" step="0.01" min="0.1" value="5.5" />
+            <input id="width" type="number" step="any" min="0.1" value="5.5" />
           </label>
           <label
             >Height (in)
-            <input id="height" type="number" step="0.01" min="0.1" value="8.5" />
+            <input id="height" type="number" step="any" min="0.1" value="8.5" />
           </label>
         </div>
 
@@ -314,11 +314,11 @@
         <div class="dims" id="interiorDims">
           <label
             >Interior width (in)
-            <input id="trimW" type="number" step="0.01" min="0.1" value="5.5" />
+            <input id="trimW" type="number" step="any" min="0.1" value="5.5" />
           </label>
           <label
             >Interior height (in)
-            <input id="trimH" type="number" step="0.01" min="0.1" value="8.5" />
+            <input id="trimH" type="number" step="any" min="0.1" value="8.5" />
           </label>
           <label
             >Page count
@@ -429,11 +429,16 @@
         const trimH = parseFloat(el("trimH").value);
         const pages = parseInt(el("pageCount").value, 10);
         if (!(trimW > 0) || !(trimH > 0) || !(pages > 0)) return null;
+        // pages / 444 yields long repeating decimals (e.g. 12.215495495...),
+        // which is spurious precision (sub-micron). Quantize to 0.001 in so the
+        // dimensions sent and shown are clean (e.g. 12.215), well within any
+        // print tolerance.
+        const round3 = (x) => Math.round(x * 1000) / 1000;
         const spine = pages / 444 + 0.06;
         return {
-          width: trimW * 2 + spine + 0.25,
-          height: trimH + 0.25,
-          spine,
+          width: round3(trimW * 2 + spine + 0.25),
+          height: round3(trimH + 0.25),
+          spine: round3(spine),
         };
       }
 

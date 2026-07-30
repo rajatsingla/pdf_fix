@@ -63,6 +63,16 @@ SUPPORTED_SIZES = [
     {"name": "A4 Landscape", "width_in": 11.69, "height_in": 8.27},
 ]
 
+# Domestic-only trim sizes (domesticBookSizes from tango/src/utils/book/index.ts).
+DOMESTIC_SIZES = [
+    {"name": "Pocket Book", "width_in": 4.25, "height_in": 6.87},
+    {"name": "Novella", "width_in": 5.0, "height_in": 8.0},
+    {"name": "Digest", "width_in": 5.5, "height_in": 8.5},
+    {"name": "US Trade", "width_in": 6.0, "height_in": 9.0},
+    {"name": "Square", "width_in": 8.5, "height_in": 8.5},
+    {"name": "US Letter", "width_in": 8.5, "height_in": 11.0},
+]
+
 
 def _crop_marks_clip(page: fitz.Page) -> fitz.Rect:
     """
@@ -96,9 +106,12 @@ def _area(size: dict) -> float:
     return size["width_in"] * size["height_in"]
 
 
-def _match_size(width_in: float, height_in: float) -> tuple[str, dict]:
+def _match_size(
+    width_in: float, height_in: float, is_domestic: bool = False
+) -> tuple[str, dict]:
     """
-    Match (width_in, height_in) against the supported sizes.
+    Match (width_in, height_in) against the supported sizes (the domestic-only
+    list when is_domestic, otherwise the full international list).
 
     Every file is modelled as a base trim size plus 0..TRIM_TOLERANCE_IN of
     added bleed, with a small SIZE_MATCH_ERROR_IN slack below for measurement
@@ -113,9 +126,10 @@ def _match_size(width_in: float, height_in: float) -> tuple[str, dict]:
     """
     lo = TRIM_TOLERANCE_IN  # upper slack (added bleed)
     err = SIZE_MATCH_ERROR_IN  # lower slack (measurement error)
+    sizes = DOMESTIC_SIZES if is_domestic else SUPPORTED_SIZES
 
     matches = [
-        s for s in SUPPORTED_SIZES
+        s for s in sizes
         if s["width_in"] - err <= width_in <= s["width_in"] + lo
         and s["height_in"] - err <= height_in <= s["height_in"] + lo
     ]
@@ -128,10 +142,14 @@ def _match_size(width_in: float, height_in: float) -> tuple[str, dict]:
         dh = height_in - s["height_in"]
         return (dw * dw + dh * dh, _area(s))
 
-    return "resize", min(SUPPORTED_SIZES, key=distance)
+    return "resize", min(sizes, key=distance)
 
 
-def fix_interior_file(pdf_bytes: bytes, output_path: str | None = None) -> bytes:
+def fix_interior_file(
+    pdf_bytes: bytes,
+    output_path: str | None = None,
+    is_domestic: bool = False,
+) -> bytes:
     """
     Fix an interior PDF: remove crop marks, match to a supported size, and
     resize/normalise.
@@ -139,6 +157,7 @@ def fix_interior_file(pdf_bytes: bytes, output_path: str | None = None) -> bytes
     Args:
         pdf_bytes:   The interior PDF as bytes.
         output_path: Optional path to also write the final PDF to.
+        is_domestic: Match against the domestic trim sizes only.
 
     Returns:
         The final PDF as bytes.
@@ -159,7 +178,7 @@ def fix_interior_file(pdf_bytes: bytes, output_path: str | None = None) -> bytes
     # Match the (uniform) page size against the supported trim sizes.
     width_in = stage_a[0].rect.width / POINTS_PER_INCH
     height_in = stage_a[0].rect.height / POINTS_PER_INCH
-    kind, size = _match_size(width_in, height_in)
+    kind, size = _match_size(width_in, height_in, is_domestic)
 
     if kind == "match":
         within_error = (

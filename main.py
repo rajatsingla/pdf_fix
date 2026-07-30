@@ -100,10 +100,15 @@ async def fix_cover_endpoint(
 
 
 @app.post("/fix-interior")
-async def fix_interior_endpoint(request: Request) -> Response:
+async def fix_interior_endpoint(
+    request: Request,
+    is_domestic: bool = Query(
+        False, description="Match against domestic trim sizes only"
+    ),
+) -> Response:
     body = await _read_pdf_body(request)
     try:
-        data = await run_in_threadpool(fix_interior_file, body)
+        data = await run_in_threadpool(fix_interior_file, body, None, is_domestic)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"failed to process PDF: {exc}")
     return Response(content=data, media_type=PDF_MEDIA_TYPE)

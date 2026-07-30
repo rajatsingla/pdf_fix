@@ -540,10 +540,10 @@
             return;
           }
           url =
-            `${API_BASE}/fix-cover?width_in=${encodeURIComponent(d.width)}` +
+            `${API_BASE}/rpdf/covers?width_in=${encodeURIComponent(d.width)}` +
             `&height_in=${encodeURIComponent(d.height)}`;
         } else {
-          url = `${API_BASE}/fix-interior`;
+          url = `${API_BASE}/rpdf/interiors`;
         }
 
         go.disabled = true;

@@ -6,9 +6,11 @@ covers/interiors to supported trim sizes. Bytes in, bytes out.
 
 ## Endpoints
 
-- `POST /fix-cover?width_in=<w>&height_in=<h>` — fix and resize a cover PDF.
-- `POST /fix-interior` — fix an interior (book block) PDF.
-- `GET /health` — liveness check.
+- `POST /rpdf/covers?width_in=<w>&height_in=<h>` — fix and resize a cover PDF.
+- `POST /rpdf/interiors?is_domestic=<bool>` — fix an interior (book block) PDF.
+- `GET /rpdf/health` — liveness check.
+- `GET /rpdf/source` — AGPL-3.0 source offer.
+- `GET /rpdf` — the browser UI.
 
 The PDF is sent as the raw request body and returned as the raw response body.
 

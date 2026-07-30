@@ -21,7 +21,9 @@
 # Run:
 #   uvicorn main:app --host 0.0.0.0 --port 8000
 
+import logging
 import os
+from logging.handlers import RotatingFileHandler
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +37,18 @@ app = FastAPI(title="PDF Fix Service")
 
 PDF_MEDIA_TYPE = "application/pdf"
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+# Minimal file logging: one rotating file at logs/app.log (5 MB x 3).
+LOG_DIR = os.environ.get("LOG_DIR", os.path.join(os.path.dirname(__file__), "logs"))
+os.makedirs(LOG_DIR, exist_ok=True)
+_handler = RotatingFileHandler(
+    os.path.join(LOG_DIR, "app.log"), maxBytes=5 * 1024 * 1024, backupCount=3
+)
+_handler.setFormatter(
+    logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+)
+logging.basicConfig(level=logging.INFO, handlers=[_handler])
+log = logging.getLogger("pdf_fix")
 
 # AGPL-3.0 §13: anyone interacting with this service over a network must be
 # offered its complete corresponding source. This service is a combined work
@@ -51,7 +65,7 @@ async def add_source_offer_header(request: Request, call_next):
     return response
 
 
-@app.get("/source")
+@app.get("/rpdf/source")
 def source() -> dict:
     """AGPL-3.0 source offer (see the LICENSE file at the repository root)."""
     return {"license": "AGPL-3.0-or-later", "source": SOURCE_URL}
@@ -67,12 +81,12 @@ app.add_middleware(
 )
 
 
-@app.get("/health")
+@app.get("/rpdf/health")
 def health() -> dict:
     return {"status": "ok"}
 
 
-@app.get("/")
+@app.get("/rpdf")
 def index() -> FileResponse:
     # Serve the UI from the same origin as the API (no CORS/mixed-content issues).
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
@@ -85,21 +99,24 @@ async def _read_pdf_body(request: Request) -> bytes:
     return body
 
 
-@app.post("/fix-cover")
+@app.post("/rpdf/covers")
 async def fix_cover_endpoint(
     request: Request,
     width_in: float = Query(..., gt=0, description="Final cover width in inches"),
     height_in: float = Query(..., gt=0, description="Final cover height in inches"),
 ) -> Response:
     body = await _read_pdf_body(request)
+    log.info("cover: in=%d bytes size=%sx%s in", len(body), width_in, height_in)
     try:
         data = await run_in_threadpool(fix_cover, body, width_in, height_in)
     except Exception as exc:  # malformed/unsupported PDF -> 400, not 500
+        log.exception("cover: failed")
         raise HTTPException(status_code=400, detail=f"failed to process PDF: {exc}")
+    log.info("cover: out=%d bytes", len(data))
     return Response(content=data, media_type=PDF_MEDIA_TYPE)
 
 
-@app.post("/fix-interior")
+@app.post("/rpdf/interiors")
 async def fix_interior_endpoint(
     request: Request,
     is_domestic: bool = Query(
@@ -107,8 +124,11 @@ async def fix_interior_endpoint(
     ),
 ) -> Response:
     body = await _read_pdf_body(request)
+    log.info("interior: in=%d bytes is_domestic=%s", len(body), is_domestic)
     try:
         data = await run_in_threadpool(fix_interior_file, body, None, is_domestic)
     except Exception as exc:
+        log.exception("interior: failed")
         raise HTTPException(status_code=400, detail=f"failed to process PDF: {exc}")
+    log.info("interior: out=%d bytes", len(data))
     return Response(content=data, media_type=PDF_MEDIA_TYPE)

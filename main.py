@@ -1,3 +1,18 @@
+# Copyright (C) 2026 Rajat Singla <rajat@stck.me>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 # main.py
 # Lightweight FastAPI service exposing the cover/interior PDF fixers.
 # Bytes in, bytes out: the PDF is sent as the raw request body and the fixed
@@ -20,6 +35,26 @@ app = FastAPI(title="PDF Fix Service")
 
 PDF_MEDIA_TYPE = "application/pdf"
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+# AGPL-3.0 §13: anyone interacting with this service over a network must be
+# offered its complete corresponding source. This service is a combined work
+# with PyMuPDF (AGPL-3.0) and is itself licensed under AGPL-3.0-or-later.
+# Override with SOURCE_URL if you deploy a modified version elsewhere.
+SOURCE_URL = os.environ.get("SOURCE_URL", "https://github.com/rajatsingla/pdf_fix")
+
+
+@app.middleware("http")
+async def add_source_offer_header(request: Request, call_next):
+    # Advertise the source offer to every network user, on every response.
+    response = await call_next(request)
+    response.headers["Link"] = f'<{SOURCE_URL}>; rel="source"'
+    return response
+
+
+@app.get("/source")
+def source() -> dict:
+    """AGPL-3.0 source offer (see the LICENSE file at the repository root)."""
+    return {"license": "AGPL-3.0-or-later", "source": SOURCE_URL}
 
 # Allow the browser to call this API directly (no Node proxy). Override with
 # ALLOW_ORIGINS=https://foo.com,https://bar.com ; default "*" for any origin.

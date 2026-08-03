@@ -1,4 +1,4 @@
-# pdf_fix
+# rpdf
 
 A small FastAPI service that normalises print-ready book PDFs — removing crop
 marks, trimming whitespace, detecting and removing cover flaps, and resizing

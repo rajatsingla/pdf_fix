@@ -107,6 +107,7 @@ def fix_cover(
       1-4. Crop to BleedBox / TrimBox / detected crop marks / whitespace.
       5.   Detect and remove flaps if present.
       6.   Resize to ``final_width_in`` x ``final_height_in`` (inches).
+      7.   Keep only the first page (a cover is a single page).
 
     Args:
         cover_bytes:     The cover PDF as bytes.
@@ -136,6 +137,10 @@ def fix_cover(
 
     # Stage C: resize to final dimensions.
     resize_doc(stage_b, final_width_in, final_height_in)
+
+    # Stage D: a cover is a single page — drop anything after the first.
+    if stage_b.page_count > 1:
+        stage_b.delete_pages(from_page=1, to_page=stage_b.page_count - 1)
 
     data = stage_b.tobytes(garbage=4, deflate=True)
     stage_b.close()

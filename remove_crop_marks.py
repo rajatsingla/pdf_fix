@@ -195,6 +195,7 @@ def detect_crop_mark_clip(page: fitz.Page) -> tuple[fitz.Rect, dict]:
     - Search only near page edges.
     - Use vertical crop marks to infer left/right trim edges.
     - Use horizontal crop marks to infer top/bottom trim edges.
+    - Mirror a single side that carries no marks of its own.
     """
     page_rect = page.rect
     zoom = DETECT_DPI / POINTS_PER_INCH
@@ -250,35 +251,52 @@ def detect_crop_mark_clip(page: fitz.Page) -> tuple[fitz.Rect, dict]:
         "method": "crop-mark-detection",
         "detected": False,
         "reason": "",
-        "scores": {},
+        "scores": {
+            "left": left[1] if left else None,
+            "right": right[1] if right else None,
+            "top": top[1] if top else None,
+            "bottom": bottom[1] if bottom else None,
+            "minimum_required": min_score,
+        },
     }
 
-    if not all([left, right, top, bottom]):
-        info["reason"] = "could not find crop marks on all four sides"
+    # Inset (in points) of each detected mark from its own page edge, measured off
+    # the page rectangle rather than the pixmap, which is rounded up to whole pixels.
+    insets = {}
+
+    if left:
+        insets["left"] = left[0] / zoom - page_rect.x0
+    if right:
+        insets["right"] = page_rect.x1 - right[0] / zoom
+    if top:
+        insets["top"] = top[0] / zoom - page_rect.y0
+    if bottom:
+        insets["bottom"] = page_rect.y1 - bottom[0] / zoom
+
+    # Marks are often printed on the leading corners only, so one side can carry
+    # none: mirror it from the side opposite, as the trim box is centred on the
+    # media box in any normal imposition. Only ever one side, though - body text
+    # inside the search band scores like a mark, and inferring two sides from that
+    # would crop a page that has no marks at all.
+    if len(insets) == 3:
+        for side, opposite in (("left", "right"), ("right", "left"),
+                               ("top", "bottom"), ("bottom", "top")):
+            if side not in insets:
+                insets[side] = insets[opposite]
+
+    if len(insets) < 4:
+        info["reason"] = "could not find crop marks on at least three sides"
         return page_rect, info
 
-    left_px, left_score = left
-    right_px, right_score = right
-    top_px, top_score = top
-    bottom_px, bottom_score = bottom
+    removed_left = insets["left"]
+    removed_right = insets["right"]
+    removed_top = insets["top"]
+    removed_bottom = insets["bottom"]
 
-    x0 = left_px / zoom
-    x1 = right_px / zoom
-    y0 = top_px / zoom
-    y1 = bottom_px / zoom
-
-    removed_left = x0 - page_rect.x0
-    removed_right = page_rect.x1 - x1
-    removed_top = y0 - page_rect.y0
-    removed_bottom = page_rect.y1 - y1
-
-    info["scores"] = {
-        "left": left_score,
-        "right": right_score,
-        "top": top_score,
-        "bottom": bottom_score,
-        "minimum_required": min_score,
-    }
+    x0 = page_rect.x0 + removed_left
+    x1 = page_rect.x1 - removed_right
+    y0 = page_rect.y0 + removed_top
+    y1 = page_rect.y1 - removed_bottom
 
     if max(removed_left, removed_right, removed_top, removed_bottom) < MIN_CROP_PT:
         info["reason"] = "detected crop is too small"
@@ -381,12 +399,11 @@ def main():
         )
 
         if info.get("scores"):
-            s = info["scores"]
-            print(
-                f"  scores:   left={s['left']:.1f}, right={s['right']:.1f}, "
-                f"top={s['top']:.1f}, bottom={s['bottom']:.1f}, "
-                f"required={s['minimum_required']:.1f}"
+            scores = ", ".join(
+                f"{side}={'-' if value is None else f'{value:.1f}'}"
+                for side, value in info["scores"].items()
             )
+            print(f"  scores:   {scores}")
 
     out.save(OUTPUT_PDF, garbage=4, deflate=True)
     out.close()

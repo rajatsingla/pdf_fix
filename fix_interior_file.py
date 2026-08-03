@@ -17,7 +17,8 @@
 # pip install pymupdf numpy
 #
 # One entry point that fixes an interior (book block) PDF given as bytes:
-#   1. Remove crop marks if present (no flaps, no whitespace trim).
+#   1. Remove crop marks if present (no flaps, no whitespace trim), and cut any
+#      bleed the crop left behind, so the page lands on the trim line.
 #   2. Match the page size to the supported book trim sizes, allowing up to
 #      +0.25 in of added trim/bleed.
 #   3. Always run the resize pipeline to normalise the file:
@@ -29,7 +30,11 @@
 
 import fitz  # PyMuPDF
 
-from remove_crop_marks import existing_box_clip, detect_crop_mark_clip
+from remove_crop_marks import (
+    existing_box_clip,
+    detect_crop_mark_clip,
+    rects_different,
+)
 from resize import resize_doc
 from fix_cover import _apply_clip
 
@@ -41,6 +46,13 @@ TRIM_TOLERANCE_IN = 0.25
 # Allow the file to be this much *smaller* than a trim size and still match it,
 # to absorb measurement/rounding error (e.g. a 5.9999 in page that is really 6 in).
 SIZE_MATCH_ERROR_IN = 0.01
+
+# How many pages to inspect when looking for crop marks. The opening pages of an
+# interior often carry none (blank half-title, full-bleed art, a cover page kept
+# in the block), while the rest of the file does, so detection cannot rely on
+# page 1 alone. The first page with marks wins and its clip is reused for the
+# whole file, which keeps this to a few renders instead of one per page.
+DETECT_MAX_PAGES = 10
 
 # Supported book trim sizes (international superset of domesticBookSizes),
 # mirrored from tango/src/utils/book/index.ts. Includes both portrait and
@@ -74,9 +86,9 @@ DOMESTIC_SIZES = [
 ]
 
 
-def _crop_marks_clip(page: fitz.Page) -> fitz.Rect:
+def _crop_marks_clip(doc: fitz.Document) -> fitz.Rect:
     """
-    Decide the crop-mark clip for an interior page:
+    Decide the crop-mark clip for an interior, in priority order:
       1. TrimBox if present (the true cut size -> book size matches exactly)
       2. else BleedBox if present
       3. else visual crop-mark detection
@@ -86,20 +98,33 @@ def _crop_marks_clip(page: fitz.Page) -> fitz.Rect:
     TrimBox is preferred over BleedBox so interiors are cut to the trim line:
     the kept page size is the real book size (e.g. 6x9), which then matches a
     supported trim size exactly instead of a larger size due to retained bleed.
+
+    Each stage scans the first DETECT_MAX_PAGES pages and takes the first page
+    that yields a clip, because the opening pages often carry no marks while the
+    body of the file does. Interiors are geometrically uniform, so the clip found
+    on that page is the clip for every page. The cheap box checks run over all
+    candidate pages first, so pages are only rendered when no page declares a
+    TrimBox/BleedBox.
     """
-    clip = existing_box_clip(page, page.trimbox)
-    if clip is not None:
-        return clip
+    page_count = min(DETECT_MAX_PAGES, doc.page_count)
 
-    clip = existing_box_clip(page, page.bleedbox)
-    if clip is not None:
-        return clip
+    for index in range(page_count):
+        page = doc[index]
 
-    clip, info = detect_crop_mark_clip(page)
-    if info.get("detected"):
-        return clip
+        clip = existing_box_clip(page, page.trimbox)
+        if clip is not None:
+            return clip
 
-    return page.rect
+        clip = existing_box_clip(page, page.bleedbox)
+        if clip is not None:
+            return clip
+
+    for index in range(page_count):
+        clip, info = detect_crop_mark_clip(doc[index])
+        if info.get("detected"):
+            return clip
+
+    return doc[0].rect
 
 
 def _area(size: dict) -> float:
@@ -145,6 +170,48 @@ def _match_size(
     return "resize", min(sizes, key=distance)
 
 
+def _trim_retained_bleed(
+    clip: fitz.Rect, page_rect: fitz.Rect, is_domestic: bool = False
+) -> fitz.Rect:
+    """
+    Cut the bleed off a clip that came out as a supported trim size plus bleed.
+
+    Crop marks come in sets: trim marks on the cut line, bleed marks outboard of
+    them. Detection cannot reliably tell the two apart - two mark sets drawn to
+    the same length score the same, and the strongest peak wins, which favours the
+    outer set - and a file declaring a BleedBox but no TrimBox hands over the bleed
+    box outright. Either way the clip is the book size plus bleed.
+
+    That anything was cropped at all is the evidence needed: the page carried area
+    outside the trim, so whatever the clip holds over the trim size it matched is
+    bleed, and bleed exists to be cut off. Shaving it centred lands the page on the
+    exact book size without scaling the artwork.
+
+    Returns ``clip`` unchanged when nothing was cropped - the page is then its own
+    trim size, so any excess over a standard size is real content - or when the
+    clip is not a supported trim size plus bleed.
+    """
+    if not rects_different(clip, page_rect):
+        return clip
+
+    kind, size = _match_size(
+        clip.width / POINTS_PER_INCH,
+        clip.height / POINTS_PER_INCH,
+        is_domestic,
+    )
+
+    if kind != "match":
+        return clip
+
+    # Clamped at zero because a match may be up to SIZE_MATCH_ERROR_IN smaller than
+    # its size, and never more than half of TRIM_TOLERANCE_IN because that is as
+    # much as _match_size tolerates.
+    dx = max((clip.width - size["width_in"] * POINTS_PER_INCH) / 2, 0.0)
+    dy = max((clip.height - size["height_in"] * POINTS_PER_INCH) / 2, 0.0)
+
+    return fitz.Rect(clip.x0 + dx, clip.y0 + dy, clip.x1 - dx, clip.y1 - dy)
+
+
 def fix_interior_file(
     pdf_bytes: bytes,
     output_path: str | None = None,
@@ -164,13 +231,14 @@ def fix_interior_file(
     """
     src = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-    # Stage A: remove crop marks (BleedBox / TrimBox / visual marks).
-    # Interiors are geometrically uniform, so detect the clip once on the first
-    # page and reuse it for every page. This avoids a full-page render per page,
-    # which is the dominant cost for large multi-page files.
+    # Stage A: remove crop marks (BleedBox / TrimBox / visual marks), then cut
+    # any bleed the crop kept, so the page ends up on the trim line.
+    # Interiors are geometrically uniform, so detect the clip once and reuse it
+    # for every page. This avoids a full-page render per page, which is the
+    # dominant cost for large multi-page files.
     stage_a = fitz.open()
     stage_a.set_metadata(src.metadata)
-    clip = _crop_marks_clip(src[0])
+    clip = _trim_retained_bleed(_crop_marks_clip(src), src[0].rect, is_domestic)
     for page_index in range(src.page_count):
         _apply_clip(src, page_index, stage_a, clip)
     src.close()

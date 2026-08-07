@@ -49,10 +49,18 @@ SIZE_MATCH_ERROR_IN = 0.01
 
 # How many pages to inspect when looking for crop marks. The opening pages of an
 # interior often carry none (blank half-title, full-bleed art, a cover page kept
-# in the block), while the rest of the file does, so detection cannot rely on
-# page 1 alone. The first page with marks wins and its clip is reused for the
-# whole file, which keeps this to a few renders instead of one per page.
-DETECT_MAX_PAGES = 10
+# in the block), so detection cannot rely on page 1 alone. These pages vote and
+# the majority wins; the first page with marks does NOT get to decide, because a
+# single page of body text can score like a set of marks (a narrow column of dark
+# pixels inside the detector's edge search band) and would otherwise crop the
+# whole file to its text block.
+DETECT_MAX_PAGES = 3
+
+# Two clips count as the same vote when every edge is within this many points.
+# Real crop marks are drawn identically on every page, so detection across pages
+# lands within a pixel of itself (0.36 pt at the 200 dpi detect render), while a
+# false positive read off body text sits tens of points away and never merges.
+VOTE_TOLERANCE_PT = 2.0
 
 # Supported book trim sizes (international superset of domesticBookSizes),
 # mirrored from tango/src/utils/book/index.ts. Includes both portrait and
@@ -86,6 +94,30 @@ DOMESTIC_SIZES = [
 ]
 
 
+def _majority(votes: list[fitz.Rect]) -> fitz.Rect | None:
+    """
+    The rect that a majority of ``votes`` agree on, to within VOTE_TOLERANCE_PT
+    on every edge, or None when no rect reaches a majority of the votes cast.
+
+    "Majority of the votes cast" and not of DETECT_MAX_PAGES, so a two-page or
+    one-page file still resolves: 3 votes need 2, 2 need 2, 1 needs 1.
+    """
+    if not votes:
+        return None
+
+    needed = len(votes) // 2 + 1
+
+    for clip in votes:
+        agree = sum(
+            1 for other in votes
+            if not rects_different(clip, other, VOTE_TOLERANCE_PT)
+        )
+        if agree >= needed:
+            return clip
+
+    return None
+
+
 def _crop_marks_clip(doc: fitz.Document) -> fitz.Rect:
     """
     Decide the crop-mark clip for an interior, in priority order:
@@ -99,30 +131,43 @@ def _crop_marks_clip(doc: fitz.Document) -> fitz.Rect:
     the kept page size is the real book size (e.g. 6x9), which then matches a
     supported trim size exactly instead of a larger size due to retained bleed.
 
-    Each stage scans the first DETECT_MAX_PAGES pages and takes the first page
-    that yields a clip, because the opening pages often carry no marks while the
-    body of the file does. Interiors are geometrically uniform, so the clip found
-    on that page is the clip for every page. The cheap box checks run over all
-    candidate pages first, so pages are only rendered when no page declares a
-    TrimBox/BleedBox.
+    Interiors are geometrically uniform, so a page that disagrees with the others
+    is a page that misread. The first DETECT_MAX_PAGES pages therefore vote and
+    the majority wins, rather than the first page with a clip deciding for the
+    whole file. The winning clip is reused for every page.
     """
-    page_count = min(DETECT_MAX_PAGES, doc.page_count)
+    pages = [doc[index] for index in range(min(DETECT_MAX_PAGES, doc.page_count))]
 
-    for index in range(page_count):
-        page = doc[index]
-
+    # Declared boxes are authoritative and cost nothing to read, so they vote
+    # first and settle the clip without rendering anything. Only pages that
+    # declare a box vote here: a page that declares none stays silent rather than
+    # voting against, because a missing box is absent metadata, not evidence that
+    # the page is untrimmed.
+    box_votes = []
+    for page in pages:
         clip = existing_box_clip(page, page.trimbox)
+        if clip is None:
+            clip = existing_box_clip(page, page.bleedbox)
         if clip is not None:
-            return clip
+            box_votes.append(clip)
 
-        clip = existing_box_clip(page, page.bleedbox)
-        if clip is not None:
-            return clip
+    winner = _majority(box_votes)
+    if winner is not None:
+        return winner
 
-    for index in range(page_count):
-        clip, info = detect_crop_mark_clip(doc[index])
-        if info.get("detected"):
-            return clip
+    # Nothing declared: read the marks off the rendered pages instead. Here a
+    # page that finds no marks DOES vote - for its own rect, i.e. for not
+    # cropping - because detection looks at the whole page, so "no marks here" is
+    # real evidence and not a gap in the metadata. That is what stops one page of
+    # body text from cropping the file down to its text block.
+    detect_votes = []
+    for page in pages:
+        clip, info = detect_crop_mark_clip(page)
+        detect_votes.append(clip if info.get("detected") else page.rect)
+
+    winner = _majority(detect_votes)
+    if winner is not None:
+        return winner
 
     return doc[0].rect
 
